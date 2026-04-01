@@ -44,7 +44,7 @@ jobs:
 
       # 📦 Install SFDX Git Delta plugin
       - name: Install SFDX Git Delta
-        run: sf plugins install sfdx-git-delta@4.16.0
+        run: echo y | sf plugins install sfdx-git-delta
 
       # 🔍 Determine commit range
       - name: Set commit range
