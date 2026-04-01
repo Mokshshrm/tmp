@@ -1,0 +1,111 @@
+name: Sandbox Deployment (JWT + Delta)
+
+on:
+  push:
+    branches:
+      - sandbox
+  pull_request:
+    types: [closed]
+    branches:
+      - sandbox
+
+jobs:
+  deploy:
+    if: github.event_name == 'push' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      # 📥 Checkout full history (needed for diff)
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 🟢 Install Salesforce CLI
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      # 🔐 Create JWT key file
+      - name: Create JWT key file
+        run: |
+          echo "${{ secrets.SF_JWT_KEY }}" > SALESFORCE_360_ORG_KEY
+          chmod 600 SALESFORCE_360_ORG_KEY
+
+      # 🔑 Authenticate to Sandbox
+      - name: Authenticate to Salesforce Sandbox
+        run: |
+          sf org login jwt \
+            --client-id ${{ secrets.SF_CLIENT_ID }} \
+            --jwt-key-file SALESFORCE_360_ORG_KEY \
+            --username ${{ secrets.SF_USERNAME }} \
+            --instance-url https://test.salesforce.com \
+            --alias sandbox
+
+      # 📦 Install SFDX Git Delta plugin
+      - name: Install SFDX Git Delta
+        run: |
+          sf plugins install sfdx-git-delta
+
+      # 🔍 Determine commit range
+      - name: Set commit range
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "BASE=${{ github.event.pull_request.base.sha }}" >> $GITHUB_ENV
+            echo "HEAD=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
+          else
+            echo "BASE=$(git rev-parse HEAD~1)" >> $GITHUB_ENV
+            echo "HEAD=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          fi
+
+      # 🚀 Generate delta (package.xml + destructiveChanges.xml)
+      - name: Generate Delta
+        run: |
+          mkdir delta
+
+          sf sgd source delta \
+            --to $HEAD \
+            --from $BASE \
+            --output-dir delta \
+            --generate-delta \
+            --source-dir force-app
+
+      # 📂 Debug output (optional but useful)
+      - name: Show generated files
+        run: |
+          echo "==== package.xml ===="
+          cat delta/package/package.xml || echo "No package.xml"
+
+          echo "==== destructiveChanges.xml ===="
+          cat delta/destructiveChanges/destructiveChanges.xml || echo "No destructiveChanges"
+
+      # 🚫 Skip if nothing to deploy
+      - name: Check if deployment needed
+        id: check
+        run: |
+          if [ ! -d "delta/package" ] && [ ! -d "delta/destructiveChanges" ]; then
+            echo "skip=true" >> $GITHUB_ENV
+          else
+            echo "skip=false" >> $GITHUB_ENV
+          fi
+
+      # 📤 Deploy additions/modifications
+      - name: Deploy package.xml
+        if: env.skip == 'false' && hashFiles('delta/package/package.xml') != ''
+        run: |
+          sf project deploy start \
+            --manifest delta/package/package.xml \
+            --target-org sandbox \
+            --wait 10 \
+            --test-level RunLocalTests
+
+      # 💣 Deploy destructive changes (post deploy)
+      - name: Deploy destructive changes
+        if: env.skip == 'false' && hashFiles('delta/destructiveChanges/destructiveChanges.xml') != ''
+        run: |
+          sf project deploy start \
+            --post-destructive-changes delta/destructiveChanges/destructiveChanges.xml \
+            --manifest delta/package/package.xml \
+            --target-org sandbox \
+            --wait 10 \
+            --ignore-warnings
