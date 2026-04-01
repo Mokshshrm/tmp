@@ -1,1 +1,1 @@
-12
+https://orgfarm-cd436ab82e-dev-ed.develop.my.salesforce-setup.com/projRes/ui-commerce-store-components/gifs/builder-loader-anim.gif
